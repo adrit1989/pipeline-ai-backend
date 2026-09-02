@@ -18,7 +18,7 @@ app.add_middleware(
 class PolygonRequest(BaseModel):
     geometry: dict
 
-# Initialize DuckDB with strict memory limits so Render's free tier doesn't  crash
+# Initialize DuckDB with strict memory limits so Render's free tier doesn't crash
 @app.on_event("startup")
 def startup_event():
     global con
@@ -43,10 +43,10 @@ async def detect_buildings(request: PolygonRequest):
         print(f"Fetching AI buildings for bbox: {xmin}, {ymin}, {xmax}, {ymax}")
 
         # Connect DIRECTLY to the AI footprint database on Amazon S3 using DuckDB
-        # We check if the building boundaries intersect your drawn polygon
+        # Updated to the latest stable 2026 Overture Maps release
         query = f"""
             SELECT ST_AsGeoJSON(geometry) as geojson 
-            FROM read_parquet('s3://overturemaps-us-west-2/release/2024-07-22.0/theme=buildings/type=building/*', filename=true, hive_partitioning=1)
+            FROM read_parquet('s3://overturemaps-us-west-2/release/2026-08-19.0/theme=buildings/type=building/*', filename=true, hive_partitioning=1)
             WHERE bbox.xmax >= {xmin} AND bbox.xmin <= {xmax} 
             AND bbox.ymax >= {ymin} AND bbox.ymin <= {ymax}
             LIMIT 5000
