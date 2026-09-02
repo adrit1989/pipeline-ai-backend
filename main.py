@@ -33,29 +33,27 @@ def startup_event():
     con.execute("SET s3_region='us-west-2';")
 
 def call_gemini_vision(image_data: bytes, api_key: str):
-    # Remove the ?key= parameter from the URL
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
     b64_img = base64.b64encode(image_data).decode('utf-8')
     
     payload = {
         "contents": [{
             "parts": [
-                {"inlineData": {"mimeType": "image/jpeg", "data": b64_img}},
-                {"text": "You are a GIS AI. Return a JSON array of bounding boxes for every house, roof, and hut in this aerial image. Format strictly like this: [{\"ymin\": 0.1, \"xmin\": 0.2, \"ymax\": 0.15, \"xmax\": 0.25}]. Coordinates MUST be normalized from 0.0 to 1.0 (top-left to bottom-right). Return ONLY the raw JSON array without markdown headers or backticks."}
+                {"text": "You are a GIS AI. Return a JSON array of bounding boxes for every house, roof, and hut in this aerial image. Format strictly like this: [{\"ymin\": 0.1, \"xmin\": 0.2, \"ymax\": 0.15, \"xmax\": 0.25}]. Coordinates MUST be normalized from 0.0 to 1.0 (top-left to bottom-right). Return ONLY the raw JSON array without markdown headers or backticks."},
+                {"inlineData": {"mimeType": "image/jpeg", "data": b64_img}}
             ]
         }]
     }
     
-    # Pass the AQ. key securely in the HTTP headers
-    headers = {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': api_key
-    }
-    
-    req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers)
-    with urllib.request.urlopen(req) as response:
-        res_data = json.loads(response.read().decode('utf-8'))
-        return res_data['candidates'][0]['content']['parts'][0]['text']
+    req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers={'Content-Type': 'application/json'})
+    try:
+        with urllib.request.urlopen(req) as response:
+            res_data = json.loads(response.read().decode('utf-8'))
+            return res_data['candidates'][0]['content']['parts'][0]['text']
+    except urllib.error.HTTPError as e:
+        # This captures the EXACT reason Google rejected the image/request
+        error_body = e.read().decode('utf-8')
+        raise Exception(f"HTTP {e.code}: {error_body}")
 
 @app.post("/api/detect-buildings")
 async def detect_buildings(request: PolygonRequest):
@@ -97,8 +95,11 @@ async def detect_buildings(request: PolygonRequest):
                 # 1. Grab raw satellite tile from ESRI servers for this specific polygon
                 esri_url = f"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export?bbox={xmin},{ymin},{xmax},{ymax}&bboxSR=4326&size=1024,1024&format=jpg&f=image"
                 req = urllib.request.Request(esri_url, headers={'User-Agent': 'Mozilla/5.0'})
-                with urllib.request.urlopen(req) as response:
-                    img_data = response.read()
+                try:
+                    with urllib.request.urlopen(req) as response:
+                        img_data = response.read()
+                except Exception as img_e:
+                    raise Exception(f"Failed to fetch ESRI Image: {str(img_e)}")
                     
                 # 2. Command Gemini to visually inspect the tile
                 gemini_res = call_gemini_vision(img_data, request.geminiKey)
