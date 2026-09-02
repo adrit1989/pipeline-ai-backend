@@ -96,13 +96,15 @@ async def detect_buildings(request: PolygonRequest):
         # --- PASS 2: Gemini 1.5 Flash Deep Scan ---
         if request.geminiKey:
             try:
-                # 1. Create a perfectly square bounding box so ESRI doesn't crash from distortion
+                # 1. Create a perfectly square bounding box
                 width = xmax - xmin
                 height = ymax - ymin
                 max_dim = max(width, height)
                 
-                if max_dim == 0: 
-                    max_dim = 0.001
+                # CRITICAL FIX: Prevent ESRI Over-Zoom 500 Crash
+                # Force the bounding box to be at least ~220 meters wide (0.002 degrees)
+                if max_dim < 0.002: 
+                    max_dim = 0.002
                 
                 center_x = (xmax + xmin) / 2
                 center_y = (ymax + ymin) / 2
@@ -115,12 +117,15 @@ async def detect_buildings(request: PolygonRequest):
                 ey_ymin = center_y - padded_radius
                 ey_ymax = center_y + padded_radius
                 
-                esri_url = f"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export?bbox={ex_xmin},{ey_ymin},{ex_xmax},{ey_ymax}&bboxSR=4326&size=800,800&format=jpg&f=image"
+                esri_url = f"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export?bbox={ex_xmin},{ey_ymin},{ex_xmax},{ey_ymax}&bboxSR=4326&imageSR=4326&size=800,800&format=jpg&f=image"
                 
                 req = urllib.request.Request(esri_url, headers={'User-Agent': 'Mozilla/5.0'})
                 try:
                     with urllib.request.urlopen(req) as response:
                         img_data = response.read()
+                except urllib.error.HTTPError as img_e:
+                    esri_err = img_e.read().decode('utf-8', errors='ignore')
+                    raise Exception(f"ESRI HTTP {img_e.code}: {esri_err}")
                 except Exception as img_e:
                     raise Exception(f"Failed to fetch ESRI Image. Error: {str(img_e)}")
                     
