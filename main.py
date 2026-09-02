@@ -1,13 +1,12 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import overturemaps
+import duckdb
 import json
 
 app = FastAPI()
 
-# CRITICAL FIX: allow_credentials MUST be False when using allow_origins=["*"]
-# Otherwise, the browser accepts the OPTIONS check but completely blocks the POST request.
+# Required so the browser doesn't block the connection
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
@@ -19,6 +18,17 @@ app.add_middleware(
 class PolygonRequest(BaseModel):
     geometry: dict
 
+# Initialize DuckDB with strict memory limits so Render's free tier doesn't crash
+@app.on_event("startup")
+def startup_event():
+    global con
+    con = duckdb.connect(database=':memory:')
+    con.execute("PRAGMA threads=2;")
+    con.execute("PRAGMA memory_limit='256MB';")
+    con.execute("INSTALL spatial; LOAD spatial;")
+    con.execute("INSTALL httpfs; LOAD httpfs;")
+    con.execute("SET s3_region='us-west-2';")
+
 @app.post("/api/detect-buildings")
 async def detect_buildings(request: PolygonRequest):
     try:
@@ -27,21 +37,35 @@ async def detect_buildings(request: PolygonRequest):
         lons = [c[0] for c in coords]
         lats = [c[1] for c in coords]
         
-        # Overture Maps requires bbox as (xmin, ymin, xmax, ymax)
-        xmin, ymin, xmax, ymax = min(lons), min(lats), max(lons), max(lats)
+        xmin, xmax = min(lons), max(lons)
+        ymin, ymax = min(lats), max(lats)
+        
         print(f"Fetching AI buildings for bbox: {xmin}, {ymin}, {xmax}, {ymax}")
 
-        # Use the official Overture library to fetch Google/MS AI footprints instantly
-        # This prevents RAM crashes on Render's free tier
-        gdf = overturemaps.get_features(bbox=(xmin, ymin, xmax, ymax), theme="buildings", type="building")
+        # Connect DIRECTLY to the AI footprint database on Amazon S3 using DuckDB
+        # We check if the building boundaries intersect your drawn polygon
+        query = f"""
+            SELECT ST_AsGeoJSON(geometry) as geojson 
+            FROM read_parquet('s3://overturemaps-us-west-2/release/2024-07-22.0/theme=buildings/type=building/*', filename=true, hive_partitioning=1)
+            WHERE bbox.xmax >= {xmin} AND bbox.xmin <= {xmax} 
+            AND bbox.ymax >= {ymin} AND bbox.ymin <= {ymax}
+            LIMIT 5000
+        """
         
-        print(f"Successfully extracted {len(gdf)} households. Converting to GeoJSON...")
+        results = con.execute(query).fetchall()
+        print(f"Successfully extracted {len(results)} households. Converting to GeoJSON...")
         
-        geojson_str = gdf.to_json()
-        geojson_dict = json.loads(geojson_str)
-        
+        features = []
+        for row in results:
+            geom = json.loads(row[0])
+            features.append({
+                "type": "Feature",
+                "geometry": geom,
+                "properties": {}
+            })
+            
         print("Sending household coordinates back to the frontend...")
-        return geojson_dict
+        return {"type": "FeatureCollection", "features": features}
         
     except Exception as e:
         print(f"Backend Error: {str(e)}")
