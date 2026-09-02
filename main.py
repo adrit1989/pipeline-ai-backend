@@ -96,28 +96,38 @@ async def detect_buildings(request: PolygonRequest):
         # --- PASS 2: Gemini 1.5 Flash Deep Scan ---
         if request.geminiKey:
             try:
-                # 1. Add a 15% mathematical padding to prevent ESRI from crashing on tight bounds
-                pad_x = (xmax - xmin) * 0.15
-                pad_y = (ymax - ymin) * 0.15
-                if pad_x == 0: pad_x = 0.001
-                if pad_y == 0: pad_y = 0.001
+                # 1. Create a perfectly square bounding box so ESRI doesn't crash from distortion
+                width = xmax - xmin
+                height = ymax - ymin
+                max_dim = max(width, height)
                 
-                ex_xmin, ex_xmax = xmin - pad_x, xmax + pad_x
-                ey_ymin, ey_ymax = ymin - pad_y, ymax + pad_y
+                if max_dim == 0: 
+                    max_dim = 0.001
                 
-                esri_url = f"https://services.arcgisonline.com/arcgis/rest/services/World_Imagery/MapServer/export?bbox={ex_xmin},{ey_ymin},{ex_xmax},{ey_ymax}&bboxSR=4326&imageSR=4326&size=1024,1024&format=jpg&f=image"
+                center_x = (xmax + xmin) / 2
+                center_y = (ymax + ymin) / 2
+                
+                # Add a 15% buffer
+                padded_radius = (max_dim / 2) * 1.15
+                
+                ex_xmin = center_x - padded_radius
+                ex_xmax = center_x + padded_radius
+                ey_ymin = center_y - padded_radius
+                ey_ymax = center_y + padded_radius
+                
+                esri_url = f"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export?bbox={ex_xmin},{ey_ymin},{ex_xmax},{ey_ymax}&bboxSR=4326&size=800,800&format=jpg&f=image"
                 
                 req = urllib.request.Request(esri_url, headers={'User-Agent': 'Mozilla/5.0'})
                 try:
                     with urllib.request.urlopen(req) as response:
                         img_data = response.read()
                 except Exception as img_e:
-                    raise Exception(f"Failed to fetch ESRI Image. URL was: {esri_url} | Error: {str(img_e)}")
+                    raise Exception(f"Failed to fetch ESRI Image. Error: {str(img_e)}")
                     
-                # 2. Command Gemini to visually inspect the tile
+                # 2. Command Gemini to visually inspect the perfectly square tile
                 gemini_res = call_gemini_vision(img_data, request.geminiKey)
                 
-                # 3. Clean up the response and convert image pixels to GPS coordinates using the padded bounds
+                # 3. Clean up the response and convert image pixels to GPS coordinates
                 json_str = gemini_res.strip().replace("```json", "").replace("```", "").strip()
                 boxes = json.loads(json_str)
                 
@@ -130,7 +140,7 @@ async def detect_buildings(request: PolygonRequest):
                     center_lng = (lng_left + lng_right) / 2
                     center_lat = (lat_top + lat_bot) / 2
                     
-                    # Deduplication: Ignore Gemini's box if Overture already mapped a building in this center
+                    # Deduplication
                     is_dupe = False
                     for existing in features:
                         if existing.get("properties", {}).get("source") == "Overture":
@@ -141,6 +151,10 @@ async def detect_buildings(request: PolygonRequest):
                                 is_dupe = True
                                 break
                     if is_dupe: continue
+                    
+                    # Double-check that Gemini didn't find a building outside our original drawn polygon
+                    if not (xmin <= center_lng <= xmax and ymin <= center_lat <= ymax):
+                        continue
                     
                     geom = {
                         "type": "Polygon",
