@@ -18,7 +18,7 @@ app.add_middleware(
 class PolygonRequest(BaseModel):
     geometry: dict
 
-# Initialize DuckDB with strict memory limits so Render's free tier doesn't crash
+# Initialize DuckDB with strict memory limits so Render's free tier doesn't  crash
 @app.on_event("startup")
 def startup_event():
     global con
