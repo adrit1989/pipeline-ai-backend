@@ -33,7 +33,8 @@ def startup_event():
     con.execute("SET s3_region='us-west-2';")
 
 def call_gemini_vision(image_data: bytes, api_key: str):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+    # Remove the ?key= parameter from the URL
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
     b64_img = base64.b64encode(image_data).decode('utf-8')
     
     payload = {
@@ -45,7 +46,13 @@ def call_gemini_vision(image_data: bytes, api_key: str):
         }]
     }
     
-    req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers={'Content-Type': 'application/json'})
+    # Pass the AQ. key securely in the HTTP headers
+    headers = {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': api_key
+    }
+    
+    req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers)
     with urllib.request.urlopen(req) as response:
         res_data = json.loads(response.read().decode('utf-8'))
         return res_data['candidates'][0]['content']['parts'][0]['text']
