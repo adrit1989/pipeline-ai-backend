@@ -1,4 +1,4 @@
 fastapi
 uvicorn
-overturemaps
+duckdb
 pydantic
