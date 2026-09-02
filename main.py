@@ -33,7 +33,7 @@ def startup_event():
     con.execute("SET s3_region='us-west-2';")
 
 def call_gemini_vision(image_data: bytes, api_key: str):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
     b64_img = base64.b64encode(image_data).decode('utf-8')
     
     payload = {
@@ -45,14 +45,18 @@ def call_gemini_vision(image_data: bytes, api_key: str):
         }]
     }
     
-    req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers={'Content-Type': 'application/json'})
+    headers = {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': api_key
+    }
+    
+    req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers)
     try:
         with urllib.request.urlopen(req) as response:
             res_data = json.loads(response.read().decode('utf-8'))
             return res_data['candidates'][0]['content']['parts'][0]['text']
     except urllib.error.HTTPError as e:
-        # This captures the EXACT reason Google rejected the image/request
-        error_body = e.read().decode('utf-8')
+        error_body = e.read().decode('utf-8', errors='ignore')
         raise Exception(f"HTTP {e.code}: {error_body}")
 
 @app.post("/api/detect-buildings")
@@ -92,27 +96,36 @@ async def detect_buildings(request: PolygonRequest):
         # --- PASS 2: Gemini 1.5 Flash Deep Scan ---
         if request.geminiKey:
             try:
-                # 1. Grab raw satellite tile from ESRI servers for this specific polygon
-                esri_url = f"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export?bbox={xmin},{ymin},{xmax},{ymax}&bboxSR=4326&size=1024,1024&format=jpg&f=image"
+                # 1. Add a 15% mathematical padding to prevent ESRI from crashing on tight bounds
+                pad_x = (xmax - xmin) * 0.15
+                pad_y = (ymax - ymin) * 0.15
+                if pad_x == 0: pad_x = 0.001
+                if pad_y == 0: pad_y = 0.001
+                
+                ex_xmin, ex_xmax = xmin - pad_x, xmax + pad_x
+                ey_ymin, ey_ymax = ymin - pad_y, ymax + pad_y
+                
+                esri_url = f"https://services.arcgisonline.com/arcgis/rest/services/World_Imagery/MapServer/export?bbox={ex_xmin},{ey_ymin},{ex_xmax},{ey_ymax}&bboxSR=4326&imageSR=4326&size=1024,1024&format=jpg&f=image"
+                
                 req = urllib.request.Request(esri_url, headers={'User-Agent': 'Mozilla/5.0'})
                 try:
                     with urllib.request.urlopen(req) as response:
                         img_data = response.read()
                 except Exception as img_e:
-                    raise Exception(f"Failed to fetch ESRI Image: {str(img_e)}")
+                    raise Exception(f"Failed to fetch ESRI Image. URL was: {esri_url} | Error: {str(img_e)}")
                     
                 # 2. Command Gemini to visually inspect the tile
                 gemini_res = call_gemini_vision(img_data, request.geminiKey)
                 
-                # 3. Clean up the response and convert image pixels to GPS coordinates
+                # 3. Clean up the response and convert image pixels to GPS coordinates using the padded bounds
                 json_str = gemini_res.strip().replace("```json", "").replace("```", "").strip()
                 boxes = json.loads(json_str)
                 
                 for box in boxes:
-                    lat_top = ymax - (box.get("ymin", 0) * (ymax - ymin))
-                    lat_bot = ymax - (box.get("ymax", 0) * (ymax - ymin))
-                    lng_left = xmin + (box.get("xmin", 0) * (xmax - xmin))
-                    lng_right = xmin + (box.get("xmax", 0) * (xmax - xmin))
+                    lat_top = ey_ymax - (box.get("ymin", 0) * (ey_ymax - ey_ymin))
+                    lat_bot = ey_ymax - (box.get("ymax", 0) * (ey_ymax - ey_ymin))
+                    lng_left = ex_xmin + (box.get("xmin", 0) * (ex_xmax - ex_xmin))
+                    lng_right = ex_xmin + (box.get("xmax", 0) * (ex_xmax - ex_xmin))
                     
                     center_lng = (lng_left + lng_right) / 2
                     center_lat = (lat_top + lat_bot) / 2
@@ -122,9 +135,9 @@ async def detect_buildings(request: PolygonRequest):
                     for existing in features:
                         if existing.get("properties", {}).get("source") == "Overture":
                             ec = existing["geometry"]["coordinates"][0]
-                            exmin, exmax = min(c[0] for c in ec), max(c[0] for c in ec)
-                            eymin, eymax = min(c[1] for c in ec), max(c[1] for c in ec)
-                            if exmin <= center_lng <= exmax and eymin <= center_lat <= eymax:
+                            exmin_coord, exmax_coord = min(c[0] for c in ec), max(c[0] for c in ec)
+                            eymin_coord, eymax_coord = min(c[1] for c in ec), max(c[1] for c in ec)
+                            if exmin_coord <= center_lng <= exmax_coord and eymin_coord <= center_lat <= eymax_coord:
                                 is_dupe = True
                                 break
                     if is_dupe: continue
