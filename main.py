@@ -1,16 +1,17 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import duckdb
+import overturemaps
 import json
 
 app = FastAPI()
 
-# CRITICAL: Allow Google Apps Script to communicate with this API
+# CRITICAL FIX: allow_credentials MUST be False when using allow_origins=["*"]
+# Otherwise, the browser accepts the OPTIONS check but completely blocks the POST request.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
-    allow_credentials=True,
+    allow_credentials=False, 
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -18,50 +19,30 @@ app.add_middleware(
 class PolygonRequest(BaseModel):
     geometry: dict
 
-# Initialize DuckDB and load spatial extensions
-@app.on_event("startup")
-def startup_event():
-    global con
-    con = duckdb.connect(database=':memory:')
-    con.execute("INSTALL spatial; LOAD spatial;")
-    con.execute("INSTALL httpfs; LOAD httpfs;")
-    con.execute("SET s3_region='us-west-2';")
-
 @app.post("/api/detect-buildings")
 async def detect_buildings(request: PolygonRequest):
     try:
-        # 1. Extract bounding box from the drawn polygon
+        print("Received polygon from map. Calculating bounding box...")
         coords = request.geometry.get('coordinates', [[]])[0]
         lons = [c[0] for c in coords]
         lats = [c[1] for c in coords]
-        xmin, xmax = min(lons), max(lons)
-        ymin, ymax = min(lats), max(lats)
+        
+        # Overture Maps requires bbox as (xmin, ymin, xmax, ymax)
+        xmin, ymin, xmax, ymax = min(lons), min(lats), max(lons), max(lats)
+        print(f"Fetching AI buildings for bbox: {xmin}, {ymin}, {xmax}, {ymax}")
 
-        # 2. Query Google Open Buildings / Overture Maps via DuckDB
-        query = f"""
-            SELECT ST_AsGeoJSON(geometry) as geojson 
-            FROM read_parquet('s3://overturemaps-us-west-2/release/2026-08-19.0/theme=buildings/type=building/*.parquet')
-            WHERE bbox.xmin > {xmin} AND bbox.xmax < {xmax} 
-            AND bbox.ymin > {ymin} AND bbox.ymax < {ymax}
-        """
+        # Use the official Overture library to fetch Google/MS AI footprints instantly
+        # This prevents RAM crashes on Render's free tier
+        gdf = overturemaps.get_features(bbox=(xmin, ymin, xmax, ymax), theme="buildings", type="building")
         
-        # 3. Execute and format results
-        results = con.execute(query).fetchall()
+        print(f"Successfully extracted {len(gdf)} households. Converting to GeoJSON...")
         
-        features = []
-        for row in results:
-            geom = json.loads(row[0])
-            features.append({
-                "type": "Feature",
-                "geometry": geom,
-                "properties": {}
-            })
-            
-        return {"type": "FeatureCollection", "features": features}
+        geojson_str = gdf.to_json()
+        geojson_dict = json.loads(geojson_str)
+        
+        print("Sending household coordinates back to the frontend...")
+        return geojson_dict
         
     except Exception as e:
+        print(f"Backend Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/")
-def health_check():
-    return {"status": "AI Infrastructure API is running"}
