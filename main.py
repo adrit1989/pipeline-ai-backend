@@ -26,8 +26,7 @@ def startup_event():
     con.execute("PRAGMA threads=2;")
     con.execute("PRAGMA memory_limit='256MB';")
     con.execute("INSTALL spatial; LOAD spatial;")
-    con.execute("INSTALL httpfs; LOAD httpfs;")
-    con.execute("SET s3_region='us-west-2';")
+    # Removed httpfs and S3 settings because we are reading local files now!
 
 @app.post("/api/detect-buildings")
 async def detect_buildings(request: PolygonRequest):
@@ -40,13 +39,12 @@ async def detect_buildings(request: PolygonRequest):
         xmin, xmax = min(lons), max(lons)
         ymin, ymax = min(lats), max(lats)
         
-        print(f"Fetching AI buildings for bbox: {xmin}, {ymin}, {xmax}, {ymax}")
+        print(f"Fetching buildings for bbox: {xmin}, {ymin}, {xmax}, {ymax}")
 
-        # Connect DIRECTLY to the AI footprint database on Amazon S3 using DuckDB
-        # Updated to the latest stable 2026 Overture Maps release
+        # Connect DIRECTLY to the local chunked parquet folders using a wildcard
         query = f"""
             SELECT ST_AsGeoJSON(geometry) as geojson 
-            FROM read_parquet('s3://overturemaps-us-west-2/release/2026-08-19.0/theme=buildings/type=building/*', filename=true, hive_partitioning=1)
+            FROM read_parquet('*_split/*.parquet')
             WHERE bbox.xmax >= {xmin} AND bbox.xmin <= {xmax} 
             AND bbox.ymax >= {ymin} AND bbox.ymin <= {ymax}
             LIMIT 5000
