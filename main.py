@@ -41,28 +41,16 @@ async def detect_buildings(request: PolygonRequest):
         
         print(f"Fetching buildings for bbox: {xmin}, {ymin}, {xmax}, {ymax}")
 
-        # 1. Dynamically scan the ENTIRE Render server for your parquet files
+        # Dynamically build the absolute path to the directory where main.py lives
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        parquet_files = []
         
-        for root, dirs, files in os.walk(base_dir):
-            for file in files:
-                if file.endswith(".parquet"):
-                    # Format path for Linux with forward slashes
-                    full_path = os.path.join(root, file).replace('\\', '/')
-                    parquet_files.append(f"'{full_path}'")
+        # Construct the wildcard path and ensure it uses forward slashes for Linux/Render
+        parquet_path = os.path.join(base_dir, '*_split', '*.parquet').replace('\\', '/')
 
-        # 2. Failsafe to alert you if the files truly didn't make it to the server
-        if not parquet_files:
-            raise Exception(f"No .parquet files were found anywhere inside {base_dir}. Please verify they uploaded to GitHub successfully.")
-
-        # 3. Create a strict, explicit list for DuckDB: ['file1.parquet', 'file2.parquet', ...]
-        file_list_str = ", ".join(parquet_files)
-
-        # 4. Connect DIRECTLY using the explicit file list
+        # Connect DIRECTLY to the local chunked parquet folders using the absolute path
         query = f"""
             SELECT ST_AsGeoJSON(geometry) as geojson 
-            FROM read_parquet([{file_list_str}])
+            FROM read_parquet('{parquet_path}')
             WHERE bbox.xmax >= {xmin} AND bbox.xmin <= {xmax} 
             AND bbox.ymax >= {ymin} AND bbox.ymin <= {ymax}
             LIMIT 5000
