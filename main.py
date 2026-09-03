@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import duckdb
 import json
+import os
 
 app = FastAPI()
 
@@ -26,7 +27,6 @@ def startup_event():
     con.execute("PRAGMA threads=2;")
     con.execute("PRAGMA memory_limit='256MB';")
     con.execute("INSTALL spatial; LOAD spatial;")
-    # Removed httpfs and S3 settings because we are reading local files now!
 
 @app.post("/api/detect-buildings")
 async def detect_buildings(request: PolygonRequest):
@@ -41,10 +41,16 @@ async def detect_buildings(request: PolygonRequest):
         
         print(f"Fetching buildings for bbox: {xmin}, {ymin}, {xmax}, {ymax}")
 
-        # Connect DIRECTLY to the local chunked parquet folders using a wildcard
+        # Dynamically build the absolute path to the directory where main.py lives
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        # Construct the wildcard path and ensure it uses forward slashes for Linux/Render
+        parquet_path = os.path.join(base_dir, '*_split', '*.parquet').replace('\\', '/')
+
+        # Connect DIRECTLY to the local chunked parquet folders using the absolute path
         query = f"""
             SELECT ST_AsGeoJSON(geometry) as geojson 
-            FROM read_parquet('*_split/*.parquet')
+            FROM read_parquet('{parquet_path}')
             WHERE bbox.xmax >= {xmin} AND bbox.xmin <= {xmax} 
             AND bbox.ymax >= {ymin} AND bbox.ymin <= {ymax}
             LIMIT 5000
